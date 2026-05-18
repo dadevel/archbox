@@ -48,9 +48,10 @@ command_help() {
     echo '  update   Rebuild container image'
     echo ''
     echo 'enter options:'
-    echo '  --network SPEC   Configure network, supported specifications: host|container:NAME|ns:PATH|none'
-    echo '  --no-gui         Disable desktop integration'
+    echo '  --name           Use custom project name'
     echo "  --private        Don't mount workdir into container"
+    echo '  --no-gui         Disable desktop integration'
+    echo '  --network SPEC   Configure network, supported specifications: host|private|container:NAME|ns:PATH|none'
     echo '  --replace        Delete and recreate container from image'
     echo '  -b|--background  Run command in background'
     echo '  -r|--root        Open root shell inside container, otherwise unprivileged user'
@@ -72,6 +73,7 @@ command_update() {
     declare -a build_opts=(
         -t "$ARCHBOX_IMAGE"
         --pull=always
+        --network host
     )
     declare volume
     for volume in "${ARCHBOX_BUILD_VOLUMES[@]}"; do
@@ -82,33 +84,38 @@ command_update() {
 }
 
 command_enter() {
+    declare project_name=''
+    declare project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
+    declare -i gui=1
+    declare network='host'
+    declare -i replace=0
     declare -i background=0
     declare user='user'
-    declare network='host'
-    declare -i gui=1
-    declare project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
-    declare -i replace=0
     declare -a command=()
     while (( $# )); do
         case "$1" in
-            -b|--background)
-                background=1
+            --name)
+                project_name="$2"
+                shift
                 ;;
-            -r|--root)
-                user='root'
+            --private)
+                project_root=''
+                ;;
+            --no-gui)
+                gui=0
                 ;;
             --network)
                 network="$2"
                 shift
                 ;;
-            --no-gui)
-                gui=0
-                ;;
-            --private)
-                project_root=''
-                ;;
             --replace)
                 replace=1
+                ;;
+            -b|--background)
+                background=1
+                ;;
+            -r|--root)
+                user='root'
                 ;;
             --)
                 shift
@@ -126,16 +133,19 @@ command_enter() {
     done
     command+=("$@")
 
-    if [[ -n "${project_root}" ]]; then
-        declare -r project_name="$(basename "${project_root}")"
-        declare -r container="archbox${project_root//\//-}"
+    declare project_id=''
+    if [[ -n "${project_name}" ]]; then
+        project_id="archbox-${project_name}"
+    elif [[ -n "${project_root}" ]]; then
+        project_name="$(basename "${project_root}")"
+        project_id="archbox${project_root//\//-}"
     else
-        declare -r project_name=private
-        declare -r container='archbox-private'
+        project_name=private
+        project_id='archbox-private'
     fi
 
     declare -a run_opts=(
-        --name "${container}"
+        --name "${project_id}"
         --hostname "${project_name}"
         --device /dev/net/tun
         --cap-add "$ARCHBOX_CAPABILITIES"
@@ -206,19 +216,19 @@ command_enter() {
         fi
     fi
 
-    declare -r status="$(sudo podman container inspect "${container}" 2> /dev/null)"
+    declare -r status="$(sudo podman container inspect "${project_id}" 2> /dev/null)"
     if (( replace )) || [[ "${status}" == '[]' ]]; then
-        sudo podman run -d --cidfile="/tmp/${container}.cid" "${run_opts[@]}" "$ARCHBOX_IMAGE"
+        sudo podman run -d --cidfile="/tmp/${project_id}.cid" "${run_opts[@]}" "$ARCHBOX_IMAGE"
     fi
 
     if (( !replace )) && [[ "$(jq -r 'first(.[]).State.Running' <<< "${status}")" == false ]]; then
-        sudo podman container start "${container}"
+        sudo podman container start "${project_id}"
     fi
 
     if (( background )); then
-        sudo podman exec "${exec_opts[@]}" "${container}" "${command[@]:-$SHELL}" &> /dev/null &
+        sudo podman exec "${exec_opts[@]}" "${project_id}" "${command[@]:-$SHELL}" &> /dev/null &
     else
-        sudo podman exec "${exec_opts[@]}" "${container}" "${command[@]:-$SHELL}"
+        sudo podman exec "${exec_opts[@]}" "${project_id}" "${command[@]:-$SHELL}"
     fi
 }
 
