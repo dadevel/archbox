@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s lastpipe
 
 # configuration {{{
 
@@ -26,7 +27,7 @@ declare -r ARCHBOX_CAPABILITIES='net_raw'
 
 main() {
     case "${1:-}" in
-        help|list|destroy|update|enter)
+        help|list|destroy|update|enter|select)
             command_"$1" "${@:2}"
             exit 0
             ;;
@@ -38,21 +39,27 @@ main() {
 }
 
 command_help() {
-    echo 'usage: archbox COMMAND [OPTION]...'
-    echo ''
+    echo 'usage: archbox COMMAND [OPTS]...'
+    echo
     echo 'commands:'
     echo '  help     Show this help'
-    echo '  enter    Execute command inside container'
+    echo '  enter    Create container or reuse existing and execute command inside'
+    echo '  select   Open shell in existing container'
     echo '  list     Show containers'
     echo '  destroy  Delete container'
     echo '  update   Rebuild container image'
-    echo ''
-    echo 'enter options:'
+    echo
+    echo 'enter command:'
+    echo '  enter [RUN_OPTS]... [EXEC_OPTS]... [COMMAND]...'
+    echo
+    echo 'run options:'
     echo '  --name           Use custom project name'
     echo "  --private        Don't mount workdir into container"
     echo '  --no-gui         Disable desktop integration'
     echo '  --network SPEC   Configure network, supported specifications: host|private|container:NAME|ns:PATH|none'
     echo '  --replace        Delete and recreate container from image'
+    echo
+    echo 'exec options:'
     echo '  -b|--background  Run command in background'
     echo '  -r|--root        Open root shell inside container, otherwise unprivileged user'
 }
@@ -62,11 +69,7 @@ command_list() {
 }
 
 command_destroy() {
-    if (( $# )); then
-        sudo podman rm -f -- "$@" > /dev/null
-    else
-        command_list | fzf --multi | xargs -r -- sudo podman rm -f -- > /dev/null
-    fi
+    command_list | fzf --multi | xargs -r -- sudo podman rm -f -- > /dev/null
 }
 
 command_update() {
@@ -135,7 +138,7 @@ command_enter() {
 
     declare project_id=''
     if [[ -n "${project_name}" ]]; then
-        project_id="archbox-${project_name}"
+        project_id="archbox-${project_name##archbox-}"
     elif [[ -n "${project_root}" ]]; then
         project_name="$(basename "${project_root}")"
         project_id="archbox${project_root//\//-}"
@@ -230,6 +233,12 @@ command_enter() {
     else
         sudo podman exec "${exec_opts[@]}" "${project_id}" "${command[@]:-$SHELL}"
     fi
+}
+
+command_select() {
+    declare project_id
+    command_list | fzf --no-multi | awk '{print $1}' | read -r project_id
+    command_enter --name "${project_id}" "$@"
 }
 
 main "$@"

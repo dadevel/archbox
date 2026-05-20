@@ -175,6 +175,7 @@ core/openssl
 extra/aws-cli
 extra/azure-cli
 extra/binwalk
+extra/curl-impersonate
 extra/hping
 extra/john
 extra/kubectl
@@ -273,6 +274,12 @@ EOF
 # set capabilities for rootless usage
 RUN for file in /usr/bin/nmap /usr/bin/hping3 /usr/bin/masscan; do setcap CAP_NET_RAW=ep "$file"; done
 
+# enable systemd user session
+RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/$ARCHBOX_USER
+
+# remove default kerberos config
+RUN rm /etc/krb5.conf
+
 # unpackaged python tools
 USER $ARCHBOX_USER
 RUN export PATH="/home/$ARCHBOX_USER/.local/bin:$PATH" && \
@@ -292,6 +299,10 @@ uv tool install git+https://github.com/dadevel/shells.git && \
 uv tool install git+https://github.com/redbyte1337/graphspy.git && \
 uv tool install git+https://github.com/rhinosecuritylabs/pacu.git && \
 uv tool install git+https://github.com/synacktiv/ntdissector.git
+
+# enable podman user socket
+RUN mkdir -p ~/.config/systemd/user/sockets.target.wants && \
+ln -s /usr/lib/systemd/user/podman.socket ~/.config/systemd/user/sockets.target.wants/podman.socket
 
 # use systemd as entrypoint
 USER root
