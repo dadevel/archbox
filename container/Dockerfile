@@ -280,6 +280,9 @@ RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/$ARCHBOX_U
 # remove default kerberos config
 RUN rm /etc/krb5.conf
 
+# enable legacy algorithms in openssl
+COPY ./openssl.cnf /etc/ssl/openssl.cnf
+
 # unpackaged python tools
 USER $ARCHBOX_USER
 RUN export PATH="/home/$ARCHBOX_USER/.local/bin:$PATH" && \
