@@ -283,8 +283,14 @@ RUN rm /etc/krb5.conf
 # enable legacy algorithms in openssl
 COPY ./openssl.cnf /etc/ssl/openssl.cnf
 
-# unpackaged python tools
+# install claude
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=true
+ENV CLAUDE_CONFIG_DIR=/home/$ARCHBOX_USER/.claude
+RUN curl -fsSL https://claude.ai/install.sh | bash && cp -H ~/.local/bin/claude /usr/local/bin/ && rm -rf ~/.claude.json ~/.claude ~/.local
+
 USER $ARCHBOX_USER
+
+# install unpackaged python tools
 RUN export PATH="/home/$ARCHBOX_USER/.local/bin:$PATH" && \
 uv tool install --python cpython-3.12.13-linux-x86_64-gnu git+https://github.com/pennyw0rth/netexec.git@v1.5.1 && \
 uv tool install git+https://github.com/cogiceo/gpohound.git && \
@@ -315,3 +321,4 @@ CMD []
 # enable native overlayfs in container
 VOLUME /var/lib/containers
 VOLUME /home/$ARCHBOX_USER/.local/share/containers
+VOLUME /home/$ARCHBOX_USER/.claude
