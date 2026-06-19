@@ -1,0 +1,33 @@
+# managed by administrator
+
+# require tty
+Defaults use_pty
+
+# reset PATH
+Defaults secure_path="/opt/archpkgs/bin:/usr/local/bin:/usr/bin"
+
+# reset environment
+Defaults env_reset
+
+# editor priorities
+Defaults editor="/usr/bin/nvim:/usr/bin/vim:/usr/bin/vi"
+
+# ssh like password prompt
+Defaults passprompt="🔐 Password: "
+
+# increase password timeout to 15m
+Defaults passwd_timeout=15
+
+# dont ask again for 10m
+Defaults timestamp_timeout=10
+
+# dont show introduction on first use
+Defaults lecture=never
+
+# allow root
+root ALL=(ALL:ALL) ALL
+
+# allow members of wheel
+%wheel ALL=(ALL) ALL
+
+@includedir /etc/sudoers.d

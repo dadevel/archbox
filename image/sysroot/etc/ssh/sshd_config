@@ -1,0 +1,84 @@
+# managed by administrator
+
+# socket
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# logging
+SyslogFacility AUTH
+LogLevel INFO
+
+# authentication
+ChallengeResponseAuthentication no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+KbdInteractiveAuthentication no
+KerberosAuthentication no
+PasswordAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+
+# users
+PermitRootLogin prohibit-password
+AllowGroups root wheel proxy
+
+# login
+LoginGraceTime 30s
+#MaxAuthTries 3
+#MaxSessions 10
+#MaxStartups 10:30:100
+#PerSourceMaxStartups 5
+
+# keep-alive
+TCPKeepAlive no
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+# greeting
+UsePAM yes
+Banner none
+PrintMotd no
+PermitTTY yes
+
+# forwarding
+AllowAgentForwarding yes
+AllowStreamLocalForwarding yes
+StreamLocalBindUnlink yes
+AllowTcpForwarding yes
+GatewayPorts clientspecified
+X11Forwarding yes
+X11UseLocalhost yes
+PermitTunnel no
+
+# algorithms
+Protocol 2
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256@libssh.org,curve25519-sha256
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+PubkeyAcceptedKeyTypes sk-ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,ssh-ed25519-cert-v01@openssh.com
+HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,ssh-ed25519-cert-v01@openssh.com
+HostKey /etc/ssh/ssh_host_ed25519_key
+ModuliFile /etc/ssh/moduli
+
+AuthorizedKeysFile %h/.ssh/authorized_keys
+AuthorizedPrincipalsFile none
+#TrustedUserCAKeys /etc/ssh/sshca.pub
+#RevokedKeys /etc/ssh/sshca.krl
+#CASignatureAlgorithms ssh-ed25519,sk-ssh-ed25519@openssh.com
+#HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub
+
+# misc
+UseDNS no
+PidFile none
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+StrictModes yes
+PermitUserEnvironment no
+Subsystem sftp internal-sftp -l ERROR
+
+# echo "proxy:$(uuidgen -r)" | tee /dev/stderr | sudo chpasswd
+Match User proxy
+  PasswordAuthentication yes
+  ForceCommand echo connected && sleep infinity

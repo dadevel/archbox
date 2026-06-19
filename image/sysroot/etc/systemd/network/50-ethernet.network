@@ -1,0 +1,45 @@
+# managed by administrator
+
+[Match]
+Name=eth* enp* enx*
+
+[Link]
+RequiredForOnline=yes
+
+[Network]
+Description=Ethernet Interface
+
+DHCP=yes
+IPv6AcceptRA=yes
+IPv6PrivacyExtensions=yes
+LinkLocalAddressing=ipv6
+IPv6LinkLocalAddressGenerationMode=stable-privacy
+IPv6Token=prefixstable
+IPv4Forwarding=yes
+IPv6Forwarding=yes
+DNSDefaultRoute=yes
+
+[DHCPv4]
+UseDNS=yes
+UseDomains=route
+UseNTP=no
+UseSIP=no
+UseMTU=yes
+SendHostname=no
+UseHostname=no
+UseRoutes=yes
+UseTimezone=no
+RouteMetric=256
+
+[DHCPv6]
+UseDNS=yes
+UseDomains=route
+UseNTP=no
+UseDelegatedPrefix=no
+SendHostname=no
+UseHostname=no
+RouteMetric=256
+
+[IPv6AcceptRA]
+UseDNS=yes
+UseDomains=route

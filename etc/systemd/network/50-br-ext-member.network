@@ -1,0 +1,9 @@
+[Match]
+Name=eth* enp* enx*
+
+[Link]
+RequiredForOnline=yes
+
+[Network]
+Description=Public Ethernet
+Bridge=br-ext

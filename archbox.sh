@@ -1,33 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
-shopt -s lastpipe
+PS4='>> '
 
 # configuration {{{
 
-declare -r XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-"/run/user/$UID"}"
-
+# constants, don't touch
+declare -r ARCHBOX_USER="${USER:-user}"
+declare -r ARCHBOX_BUILD_DIR="$(dirname "$(realpath "$0")")"
+declare -r ARCHBOX_BUILD_CONTEXT="$ARCHBOX_BUILD_DIR/image"
 declare -r ARCHBOX_IMAGE='localhost/archbox:latest'
+declare -r ARCHBOX_STATE_DIR="$HOME/.local/share/archbox"
+declare -r ARCHBOX_RUN_DIR="${XDG_RUNTIME_DIR:-"/run/user/$UID"}/archbox"
 
-declare -r ARCHBOX_BUILD_CONTEXT="$(dirname "$(realpath "$0")")/container"
-declare -ra ARCHBOX_BUILD_VOLUMES=(
-    /var/cache/pacman:/var/cache/pacman:rw
+# build options
+declare -ra ARCHBOX_BUILD_ARGS=(
+    --build-arg ARCHBOX_USER="$ARCHBOX_USER"
+    --build-arg ARCHBOX_UID=1000
+    # @TODO: generate your own hash with 'openssl passwd -6'
+    --build-arg ARCHBOX_SUDO_PASSWORD='$6$RXWXL7w7c.G.3WoK$GaZkZkt6fKKopyWHmZvjsEFYtCpblzVIqglqD3heKN8pwBd1RHQ5orOqzzgzrgx/gxFApqpsBNx5S/DFHya3r1'
+    # @TODO: root login disabled, set password hash to enable
+    --build-arg ARCHBOX_ROOT_PASSWORD='!'
+    # @TODO: path to your dotfiles, adjust as needed
+    --build-context dotfiles="$HOME/dotfiles"
+    # @TODO: path to internal tools, adjust as well
+    --build-context work="$HOME/projects/work"
 )
+# size of virtual VM disk, build requires size times three free space
+declare -r ARCHBOX_DISK_SIZE=32G
+# directory shared between all vms
+declare -r ARCHBOX_SHARE_DIR="$HOME/share"
 
-# additional bind mounts
-# add/remove files and directories as needed
-declare -ra ARCHBOX_RUNTIME_VOLUMES=(
-    "$ARCHBOX_HOME/shared:/home/user/shared:rw"
-)
-
-# additional capabilities
-# wireshark requires 'net_admin,net_raw', but most network tools like nmap and tcpdump need just 'net_raw'
-declare -r ARCHBOX_CAPABILITIES='net_raw'
+# runtime options
+# @TODO: name of the bridge interface for bridge mode
+declare -r ARCHBOX_EXTERNAL_BRIDGE='br-ext'
+# @TODO: name of the bridge interface for nat mode
+declare -r ARCHBOX_NAT_BRIDGE='br-nat'
+# custom qemu command line options
+declare -ra ARCHBOX_BOOT_ARGS=()
+# paths to certain files
+declare -r ARCHBOX_VIRTIOFSD='/usr/lib/virtiofsd'
+declare -r ARCHBOX_OVMF_CODE='/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd'
+declare -r ARCHBOX_OVMF_VARS='/usr/share/edk2-ovmf/x64/OVMF_VARS.4m.fd'
 
 # }}}
 
 main() {
     case "${1:-}" in
-        help|list|destroy|update|enter|select)
+        help|list|build|up|down|destroy)
             command_"$1" "${@:2}"
             exit 0
             ;;
@@ -39,206 +58,306 @@ main() {
 }
 
 command_help() {
-    echo 'usage: archbox COMMAND [OPTS]...'
-    echo
+    echo 'usage: archbox COMMAND ...'
+    echo ''
     echo 'commands:'
-    echo '  help     Show this help'
-    echo '  enter    Create container or reuse existing and execute command inside'
-    echo '  select   Open shell in existing container'
-    echo '  list     Show containers'
-    echo '  destroy  Delete container'
-    echo '  update   Rebuild container image'
-    echo
-    echo 'enter command:'
-    echo '  enter [RUN_OPTS]... [EXEC_OPTS]... [COMMAND]...'
-    echo
-    echo 'run options:'
-    echo '  --name           Use custom project name'
-    echo "  --private        Don't mount workdir into container"
-    echo '  --no-gui         Disable desktop integration'
-    echo '  --network SPEC   Configure network, supported specifications: host|private|container:NAME|ns:PATH|none'
-    echo '  --replace        Delete and recreate container from image'
-    echo
-    echo 'exec options:'
-    echo '  -b|--background  Run command in background'
-    echo '  -r|--root        Open root shell inside container, otherwise unprivileged user'
+    echo '  help'
+    echo '    Show this help'
+    echo '  list'
+    echo '    Show projects'
+    echo '  build'
+    echo '    Rebuild template'
+    echo '  up [PROJECT_ROOT] [--no-gui] [--foreground] [--network nat|bridge]'
+    echo '    Boot VM'
+    echo '  down [PROJECT_ROOT]'
+    echo '    Shutdown VM'
+    echo '  destroy'
+    echo '    Delete VM(s)'
+    echo '  logs [JOURNALCTL_OPTS]...'
+    echo '    Show logs'
 }
 
 command_list() {
-    sudo podman ps --all --format json | jq -r '.[]|select(.Names[]|startswith("archbox-"))|[.Names[0], .Status]|@tsv' | column -t -s $'\t'
+    # FIXME: add up/down indicator
+    find "$ARCHBOX_STATE_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename '{}' ';'
 }
 
-command_destroy() {
-    command_list | fzf --multi | xargs -r -- sudo podman rm -f -- > /dev/null
-}
+command_build() {
+    set -x
+    sudo -v
 
-command_update() {
-    declare -a build_opts=(
-        -t "$ARCHBOX_IMAGE"
+    if [[ ! -f ~/.ssh/archbox ]]; then
+        ssh-keygen -t ed25519 -C 'root@archbox' -f ~/.ssh/archbox
+    fi
+    cp ~/.ssh/archbox.pub "$ARCHBOX_BUILD_DIR/image/"
+
+    declare -a podman_args=(
         --pull=always
         --network host
+        --no-hosts
+        --volume "$ARCHBOX_BUILD_DIR/cache:/var/cache/pacman:rw"
+        --squash-all
+        -t "$ARCHBOX_IMAGE"
     )
-    declare volume
-    for volume in "${ARCHBOX_BUILD_VOLUMES[@]}"; do
-        build_opts+=(--volume "${volume}")
-    done
+    # reuse pacman cache from host
+    mkdir -p "$ARCHBOX_BUILD_DIR/cache/pkg"
+    rsync --exclude 'download-*/' /var/cache/pacman/pkg/ "$ARCHBOX_BUILD_DIR/cache/pkg"
+    podman build "${podman_args[@]}" "${ARCHBOX_BUILD_ARGS[@]}" "$ARCHBOX_BUILD_CONTEXT"
 
-    sudo podman build "${build_opts[@]}" "$ARCHBOX_BUILD_CONTEXT"
+    teardown() {
+        rm -rf "$ARCHBOX_BUILD_DIR/tmp"
+
+        if mountpoint -q "$ARCHBOX_BUILD_DIR/mnt"; then
+            sudo umount -R "$ARCHBOX_BUILD_DIR/mnt"
+            rmdir "$ARCHBOX_BUILD_DIR/mnt"
+        fi
+
+        if [[ -e /dev/loop0 ]]; then
+            sudo losetup /dev/loop0 --detach-all
+            sudo losetup /dev/loop0 --remove
+        fi
+    }
+    trap teardown EXIT
+
+    # backup previous disk image
+    if [[ -f "$ARCHBOX_BUILD_DIR/disk.raw" ]]; then
+        cp "$ARCHBOX_BUILD_DIR/disk.raw" "$ARCHBOX_BUILD_DIR/disk.raw.bak"
+    fi
+    # create empty disk image
+    rm -f "$ARCHBOX_BUILD_DIR/disk.raw"
+    truncate -s "$ARCHBOX_DISK_SIZE" "$ARCHBOX_BUILD_DIR/disk.raw"
+
+    # create partitions
+    sgdisk --zap-all "$ARCHBOX_BUILD_DIR/disk.raw"
+    sgdisk --new=0:0:+512M --typecode=0:ef00 --change-name=0:efi "$ARCHBOX_BUILD_DIR/disk.raw"
+    sgdisk --new=0:0:0 --typecode=0:8304 --change-name=0:system "$ARCHBOX_BUILD_DIR/disk.raw"
+    sgdisk --sort --print "$ARCHBOX_BUILD_DIR/disk.raw"
+
+    # mount disk
+    sudo losetup --partscan /dev/loop0 "$ARCHBOX_BUILD_DIR/disk.raw"
+
+    # create filesystems
+    sudo mkfs.fat -F 32 -n boot /dev/loop0p1
+    sudo mkfs.ext4 -L root /dev/loop0p2
+
+    # mount partitions
+    mkdir "$ARCHBOX_BUILD_DIR/mnt"
+    sudo mount /dev/loop0p2 "$ARCHBOX_BUILD_DIR/mnt"
+    sudo mkdir -p "$ARCHBOX_BUILD_DIR/mnt/boot"
+    sudo mount /dev/loop0p1 "$ARCHBOX_BUILD_DIR/mnt/boot"
+
+    # copy container filesystem to disk
+    rm -rf "$ARCHBOX_BUILD_DIR/tmp"
+    mkdir "$ARCHBOX_BUILD_DIR/tmp"
+
+    # 'podman build --output type=tar,dest=./sysroot.tar' does not preserve SUID/SGID bits, see https://github.com/podman-container-tools/buildah/issues/4463
+    podman image save "$ARCHBOX_IMAGE" | tar -xf- -C "$ARCHBOX_BUILD_DIR/tmp"
+    sudo tar -xf "$ARCHBOX_BUILD_DIR/tmp/"????????????????????????????????????????????????????????????????.tar -C "$ARCHBOX_BUILD_DIR/mnt"
+
+    trap - EXIT
+    teardown
 }
 
-command_enter() {
-    declare project_name=''
-    declare project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
+command_up() {
+    declare project_root=''
+    declare network='nat'
     declare -i gui=1
-    declare network='host'
-    declare -i replace=0
-    declare -i background=0
-    declare user='user'
-    declare -a command=()
+    declare -i foreground=0
     while (( $# )); do
         case "$1" in
-            --name)
-                project_name="$2"
+            --network)
+                if (( $# < 2 )) || [[ "$2" != nat && "$2" != bridge ]]; then
+                    echo bad args >&2
+                    return 1
+                fi
+                network="$2"
                 shift
-                ;;
-            --private)
-                project_root=''
                 ;;
             --no-gui)
                 gui=0
                 ;;
-            --network)
-                network="$2"
-                shift
-                ;;
-            --replace)
-                replace=1
-                ;;
-            -b|--background)
-                background=1
-                ;;
-            -r|--root)
-                user='root'
-                ;;
-            --)
-                shift
-                break
+            --foreground)
+                foreground=1
                 ;;
             -*)
-                echo 'bad arg(s)' >&2
-                exit 1
+                echo bad args >&2
+                return 1
                 ;;
             *)
-                command+=("$1")
+                if (( $# < 2 )) || [[ -n "${project_root}" ]]; then
+                    echo bad args >&2
+                    return 1
+                fi
+                project_root="$2"
+                shift
                 ;;
         esac
         shift
     done
-    command+=("$@")
+    if [[ -z "${project_root}" ]]; then
+        project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
+    fi
+    declare -r project_slug="$(basename "${project_root}")"
+    declare project_name="${project_root##/}"
+    declare -r project_name="${project_name//\//-}"
+    #declare -r workdir="/home/user/project/$(realpath --relative-to="${project_root}" "$PWD")"
+    declare -gr run_dir="$ARCHBOX_RUN_DIR/${project_name}"
+    declare -r state_dir="$ARCHBOX_STATE_DIR/${project_name}"
 
-    declare project_id=''
-    if [[ -n "${project_name}" ]]; then
-        project_id="archbox-${project_name##archbox-}"
-    elif [[ -n "${project_root}" ]]; then
-        project_name="$(basename "${project_root}")"
-        project_id="archbox${project_root//\//-}"
-    else
-        project_name=private
-        project_id='archbox-private'
+    mkdir -p "${run_dir}" "${state_dir}"
+
+    if [[ ! -f "${state_dir}/disk.raw" ]]; then
+        rsync "$ARCHBOX_BUILD_DIR/disk.raw" "${state_dir}/disk.raw"
+    fi
+    if [[ ! -f "${state_dir}/efi.raw" ]]; then
+        rsync "$ARCHBOX_OVMF_VARS" "${state_dir}/efi.raw"
     fi
 
-    declare -a run_opts=(
-        --name "${project_id}"
-        --hostname "${project_name}"
-        --device /dev/net/tun
-        --cap-add "$ARCHBOX_CAPABILITIES"
-        --network "${network}"
-        --volume /etc/localtime:/etc/localtime:ro
+    if [[ -f "${state_dir}/id.txt" ]]; then
+        declare -r project_id="$(< "${state_dir}/id.txt")"
+    else
+        declare -r project_id="$(openssl rand -hex 3 | tee "${state_dir}/id.txt")"
+    fi
+    declare -r hostname="archbox-${project_slug}"
+    declare -r mac_address="52:54:00$(echo -n "${project_id}" | sed -E 's|(..)|:\1|g')"
+    declare -r vm_interface="tap-${project_id}"
+    declare -r vsock_cid="$(printf '%d\n' "${project_id}")"
+
+    if [[ "${network}" == nat ]]; then
+        declare -r bridge_interface="$ARCHBOX_NAT_BRIDGE"
+    elif [[ "${network}" == bridge ]]; then
+        declare -r bridge_interface="$ARCHBOX_EXTERNAL_BRIDGE"
+    else
+        return 1
+    fi
+    if ! ip link show "${vm_interface}" &> /dev/null; then
+        sudo ip tuntap add mode tap "${vm_interface}"
+    fi
+    sudo ip link set dev "${vm_interface}" master "${bridge_interface}"
+    sudo ip link set "${vm_interface}" up
+
+    teardown() {
+        kill $(jobs -p) ||:
+        # avoid sudo prompt during shutdown, let network interface linger instead
+        #sudo ip link delete "${vm_interface}"
+    }
+    if (( foreground )); then
+        trap teardown EXIT
+    fi
+
+    if (( foreground )); then
+        "$ARCHBOX_VIRTIOFSD" --socket-path "${run_dir}/virtiofs-project.sock" --shared-dir "${project_root}" &
+        "$ARCHBOX_VIRTIOFSD" --socket-path "${run_dir}/virtiofs-share.sock" --shared-dir "$ARCHBOX_SHARE_DIR" &
+    else
+        systemd-run --user --unit "archbox-${project_name}-virtiofsd-project.service" --nice 10 -- "$ARCHBOX_VIRTIOFSD" --socket-path "${run_dir}/virtiofs-project.sock" --shared-dir "${project_root}"
+        systemd-run --user --unit "archbox-${project_name}-virtiofsd-share.service" --nice 10 -- "$ARCHBOX_VIRTIOFSD" --socket-path "${run_dir}/virtiofs-share.sock" --shared-dir "$ARCHBOX_SHARE_DIR"
+    fi
+
+    declare qemu_args=(
+        # FIXME: use direct kernel boot, remove efi
+        #-kernel "$ARCHBOX_BUILD_DIR/vmlinuz-linux" -append 'root=LABEL=root rw'
+
+        # efi
+        -drive if=pflash,format=raw,unit=0,file="$ARCHBOX_OVMF_CODE",readonly=on
+        -drive if=pflash,format=raw,unit=1,file="${state_dir}/efi.raw"
+        -boot order=d,menu=on
+
+        # storage
+        -drive media=disk,file="${state_dir}/disk.raw",format=raw,if=virtio,aio=native,cache.direct=on,discard=unmap
+
+        # ram, memory backend required for virtiofs
+        -m size=8g
+        -device virtio-balloon
+        -object memory-backend-memfd,id=mem,size=8G,share=on -numa node,memdev=mem
+
+        # compute
+        -cpu host -smp dies=1,sockets=1,cores=2,threads=2
+        -machine type=q35,accel=kvm -enable-kvm
+        -device intel-iommu
+
+        # networking
+        -netdev type=tap,id=network0,ifname="${vm_interface}",script=no,downscript=no
+        -device driver=virtio-net,netdev=network0,mac="${mac_address}"
+
+        # video, virtio display doesn't support dynamic display resolution, qxl dynamic resolution requires x11
+        -vga none
+        -device qxl-vga,vgamem_mb=32
+        -device virtio-serial-pci
+        -spice unix=on,addr="${run_dir}/spice.sock",disable-ticketing=on
+        -chardev spicevmc,id=spicechannel0,name=vdagent
+        -device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0
+
+        # spice usb redirection
+        -usb -device usb-tablet -device nec-usb-xhci,id=usb
+        -chardev spicevmc,name=usbredir,id=usbredirchardev1 -device usb-redir,chardev=usbredirchardev1,id=usbredirdev1
+
+        # audio
+        -device intel-hda
+        -device hda-duplex
+
+        # virtiofs
+        -chardev socket,id=char0,path="${run_dir}/virtiofs-project.sock" -device vhost-user-fs-pci,chardev=char0,tag=project
+        -chardev socket,id=char1,path="${run_dir}/virtiofs-share.sock" -device vhost-user-fs-pci,chardev=char1,tag=share
+
+        # systemd vm interface, see https://systemd.io/VM_INTERFACE/
+        # sshd on vsock
+        -device vhost-vsock-pci,id=vhost-vsock-pci0,guest-cid="${vsock_cid}"
+        # config pass through
+        -smbios type=11,value=io.systemd.credential.binary:system.hostname="$(echo -n "${hostname}" | base64 -w0)"
     )
-    for volume in "${ARCHBOX_RUNTIME_VOLUMES[@]}"; do
-        run_opts+=(--volume "${volume}")
-    done
-    if (( gui )); then
-        run_opts+=(--device /dev/dri --device /dev/snd)
-        if [[ -n "${DISPLAY:-}" ]]; then
-            run_opts+=(--volume /tmp/.X11-unix/X0:/tmp/.X11-unix/X0)
-        fi
-        if [[ -n "${XAUTHORITY:-}" ]]; then
-            cp -- "$XAUTHORITY" "/run/user/$UID/xauth"
-            run_opts+=(--volume "/run/user/$UID/xauth:/run/user/1000/xauth")
-        fi
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            run_opts+=(--volume "$XDG_RUNTIME_DIR/wayland-0:/run/user/1000/wayland-0")
-        fi
-        if [[ -e "$XDG_RUNTIME_DIR/pulse/native" ]]; then
-            run_opts+=(--volume "$XDG_RUNTIME_DIR/pulse/native:/run/user/1000/pulse/native")
-        fi
-        if [[ -e "$XDG_RUNTIME_DIR/pipewire-0" ]]; then
-            run_opts+=(--volume "$XDG_RUNTIME_DIR/pipewire-0:/run/user/1000/pipewire-0")
-        fi
-    fi
-    if [[ -n "${project_root}" ]]; then
-        run_opts+=(--volume "${project_root}:/home/user/project")
-    fi
-    if (( replace )); then
-        run_opts+=(--replace)
-    fi
 
-    declare -ga exec_opts=(
-        --interactive
-        --tty
-        --user "${user}"
-        --env "USER=${user}"
-        --env ARCHBOX_PROJECT_NAME="${project_name}"
-        # the following env vars are set on purpose even when running as root
-        --env XDG_RUNTIME_DIR=/run/user/1000
-    )
-    if [[ -n "${project_root}" ]]; then
-        exec_opts+=(--workdir "/home/user/project/$(realpath --relative-to="${project_root}" "$PWD")")
+    if (( foreground )); then
+        qemu-system-x86_64 "${qemu_args[@]}" "${ARCHBOX_BOOT_ARGS[@]}" &
     else
-        exec_opts+=(--workdir /home/user/project)
+        systemd-run --user --unit "archbox-${project_name}-qemu.service" --nice 10 -- qemu-system-x86_64 "${qemu_args[@]}" "${ARCHBOX_BOOT_ARGS[@]}"
     fi
+
     if (( gui )); then
-        exec_opts+=(
-            # some gui programs, e.g. kitty, require 'DBUS_SESSION_BUS_ADDRESS' to be set, but dbus itself is not required
-            --env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
-            #--env XDG_CURRENT_DESKTOP
-            #--env XDG_SEAT
-            #--env XDG_SESSION_CLASS
-            #--env XDG_SESSION_ID
-            #--env XDG_SESSION_TYPE
-        )
-        if [[ -n "${DISPLAY:-}" ]]; then
-            exec_opts+=(--env "DISPLAY=$DISPLAY")
-        fi
-        if [[ -n "${XAUTHORITY:-}" ]]; then
-            exec_opts+=(--env XAUTHORITY=/run/user/1000/xauth)
-        fi
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-            exec_opts+=(--env "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+        if (( foreground )); then
+            spicy --uri "spice+unix://${run_dir}/spice.sock" &
+        else
+            systemd-run --user --unit "archbox-${project_name}-spicy.service" --nice 10 -- spicy --uri "spice+unix://${run_dir}/spice.sock"
         fi
     fi
 
-    declare -r status="$(sudo podman container inspect "${project_id}" 2> /dev/null)"
-    if (( replace )) || [[ "${status}" == '[]' ]]; then
-        sudo podman run -d --cidfile="/tmp/${project_id}.cid" "${run_opts[@]}" "$ARCHBOX_IMAGE"
-    fi
+    set +x
+    echo 'Command to connect over SSH:'
+    echo "ssh -i ~/.ssh/archbox $ARCHBOX_USER@vsock/${vsock_cid}"
 
-    if (( !replace )) && [[ "$(jq -r 'first(.[]).State.Running' <<< "${status}")" == false ]]; then
-        sudo podman container start "${project_id}"
-    fi
-
-    if (( background )); then
-        sudo podman exec "${exec_opts[@]}" "${project_id}" "${command[@]:-$SHELL}" &> /dev/null &
-    else
-        sudo podman exec "${exec_opts[@]}" "${project_id}" "${command[@]:-$SHELL}"
+    if (( foreground )); then
+        wait
     fi
 }
 
-command_select() {
-    declare project_id
-    command_list | fzf --no-multi | awk '{print $1}' | read -r project_id
-    command_enter --name "${project_id}" "$@"
+command_down() {
+    if (( $# == 0 )); then
+        declare project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
+    elif (( $# == 1 )); then
+        declare project_root="$1"
+    else
+        echo bad args >&2
+        return 1
+    fi
+    declare project_name="${project_root##/}"
+    declare -r project_name="${project_name//\//-}"
+    declare -r project_id="$(< "$ARCHBOX_STATE_DIR/${project_name}/id.txt")"
+    declare -r vsock_cid="$(printf '%d\n' "${project_id}")"
+
+    timeout 15 ssh -i ~/.ssh/archbox "root@vsock/${vsock_cid}" systemctl poweroff ||:
+    systemctl --user stop "archbox-${project_name}-*.service"
+    systemctl --user reset-failed "archbox-${project_name}-*.service"
+}
+
+command_destroy() {
+    command_list | fzf --multi | xargs -r -- rm -rf --
+}
+
+command_logs() {
+    exec journalctl --user --no-hostname --unit 'archbox*.service' "$@"
+}
+
+rsync() {
+    command rsync --progress --human-readable "$@"
 }
 
 main "$@"
