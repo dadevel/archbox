@@ -53,6 +53,7 @@ extra/jq
 extra/minicom
 extra/neovim
 extra/parallel
+extra/parted
 extra/progress
 extra/pv
 extra/qemu-img
@@ -105,16 +106,39 @@ extra/passt
 extra/podman
 
 # development
+# c/c++
+#extra/bear
+#extra/clang
+#extra/gdb
+#extra/lldb
+#extra/ltrace
+#extra/mingw-w64
+#extra/strace
+# rust
+extra/rustup
 # go
 extra/go
+extra/gopls
 # python
 core/python
 extra/pyright
 extra/python-pip
+#extra/python-pipx
 extra/python-requests
 extra/uv
+# ruby
+#extra/ruby
+#extra/ruby-bundler
+# php
+#extra/php
+#extra/composer
 # java, also needed for burp
 extra/jdk-openjdk
+# nodejs
+#extra/nodejs
+#extra/npm
+# terraform
+#extra/opentofu
 # yaml
 extra/yaml-language-server
 

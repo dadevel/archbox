@@ -46,7 +46,7 @@ declare -r ARCHBOX_OVMF_VARS='/usr/share/edk2-ovmf/x64/OVMF_VARS.4m.fd'
 
 main() {
     case "${1:-}" in
-        help|list|build|up|down|destroy)
+        help|list|build|up|down|destroy|logs)
             command_"$1" "${@:2}"
             exit 0
             ;;
@@ -198,10 +198,11 @@ command_up() {
         project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
     fi
     declare -r project_slug="$(basename "${project_root}")"
+    declare -r project_hash="$(echo -n "${project_root}" | md5sum | cut -d' ' -f1)"
     declare project_name="${project_root##/}"
     declare -r project_name="${project_name//\//-}"
     #declare -r workdir="/home/user/project/$(realpath --relative-to="${project_root}" "$PWD")"
-    declare -gr run_dir="$ARCHBOX_RUN_DIR/${project_name}"
+    declare -gr run_dir="$ARCHBOX_RUN_DIR/${project_hash}"
     declare -r state_dir="$ARCHBOX_STATE_DIR/${project_name}"
 
     mkdir -p "${run_dir}" "${state_dir}"
@@ -221,7 +222,7 @@ command_up() {
     declare -r hostname="archbox-${project_slug}"
     declare -r mac_address="52:54:00$(echo -n "${project_id}" | sed -E 's|(..)|:\1|g')"
     declare -r vm_interface="tap-${project_id}"
-    declare -r vsock_cid="$(printf '%d\n' "${project_id}")"
+    declare -r vsock_cid="$(printf '%d\n' "0x${project_id}")"
 
     if [[ "${network}" == nat ]]; then
         declare -r bridge_interface="$ARCHBOX_NAT_BRIDGE"
@@ -279,23 +280,49 @@ command_up() {
         -netdev type=tap,id=network0,ifname="${vm_interface}",script=no,downscript=no
         -device driver=virtio-net,netdev=network0,mac="${mac_address}"
 
-        # video, virtio display doesn't support dynamic display resolution, qxl dynamic resolution requires x11
-        -vga none
-        -device qxl-vga,vgamem_mb=32
+        # video
+
+        # gl video, best practice according to quickemu, noticed some stutters
+        -vga none  # taken over by spice
+        -device virtio-gpu-gl
+        -display egl-headless
         -device virtio-serial-pci
+
+        # qxl video, requires x11, supports dynamic display resolution, noticed some freezes
+        #-vga none
+        #-device qxl-vga,vgamem_mb=32
+        #-device virtio-serial-pci
+
+        # '-display sdm' doesn't have clipboard sharing, dynamic display doesn't work either
+        # '-display gtk' is supposed to have clipboard sharing but apparently doesn't, dynamic display worked on x11
+        # '-display dbus' requires 'qemu-vnc' which is nowhere to be found
+        # '-device virtio-gpu-rutabaga' seems experimental and guest-site setup is unclear
+        # '-vnc :0' seems to have no clipboard sharing, also no dynamic display
+
+        # spice
         -spice unix=on,addr="${run_dir}/spice.sock",disable-ticketing=on
-        -chardev spicevmc,id=spicechannel0,name=vdagent
-        -device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0
+        -chardev spicevmc,id=vdagent0,name=vdagent
+        -device virtserialport,chardev=vdagent0,name=com.redhat.spice.0
+
+        # usb keyboard and mouse
+        -usb
+        -device usb-ehci,id=input
+        -device usb-kbd,bus=input.0
+        -device usb-tablet,bus=input.0
 
         # spice usb redirection
-        -usb -device usb-tablet -device nec-usb-xhci,id=usb
-        -chardev spicevmc,name=usbredir,id=usbredirchardev1 -device usb-redir,chardev=usbredirchardev1,id=usbredirdev1
+        -device qemu-xhci,id=spicepass
+        -chardev spicevmc,id=usbredirchardev1,name=usbredir
+        -device usb-redir,chardev=usbredirchardev1,id=usbredirdev1
+        -device pci-ohci,id=smartpass
+        -device usb-ccid
 
         # audio
+        -audiodev pipewire,id=audio0
         -device intel-hda
-        -device hda-duplex
+        -device hda-duplex,audiodev=audio0
 
-        # virtiofs
+        # virtiofs, '-virtfs' uses the older virtio 9p backend
         -chardev socket,id=char0,path="${run_dir}/virtiofs-project.sock" -device vhost-user-fs-pci,chardev=char0,tag=project
         -chardev socket,id=char1,path="${run_dir}/virtiofs-share.sock" -device vhost-user-fs-pci,chardev=char1,tag=share
 
@@ -304,6 +331,9 @@ command_up() {
         -device vhost-vsock-pci,id=vhost-vsock-pci0,guest-cid="${vsock_cid}"
         # config pass through
         -smbios type=11,value=io.systemd.credential.binary:system.hostname="$(echo -n "${hostname}" | base64 -w0)"
+
+        # misc
+        -device virtio-rng-pci,rng=rng0 -object rng-random,id=rng0,filename=/dev/urandom
     )
 
     if (( foreground )); then
@@ -341,7 +371,7 @@ command_down() {
     declare project_name="${project_root##/}"
     declare -r project_name="${project_name//\//-}"
     declare -r project_id="$(< "$ARCHBOX_STATE_DIR/${project_name}/id.txt")"
-    declare -r vsock_cid="$(printf '%d\n' "${project_id}")"
+    declare -r vsock_cid="$(printf '%d\n' "0x${project_id}")"
 
     timeout 15 ssh -i ~/.ssh/archbox "root@vsock/${vsock_cid}" systemctl poweroff ||:
     systemctl --user stop "archbox-${project_name}-*.service"
