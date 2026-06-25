@@ -78,8 +78,15 @@ command_help() {
 }
 
 command_list() {
-    # FIXME: add up/down indicator
-    find "$ARCHBOX_STATE_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename '{}' ';'
+    find "$ARCHBOX_STATE_DIR" -mindepth 1 -maxdepth 1 -type d | while read -r line; do
+        declare project_name="$(basename "${line}")"
+        echo -n "${project_name}"
+        if systemctl --user --quiet is-active "archbox-${project_name}-qemu.service"; then
+            echo ' up'
+        else
+            echo ' down'
+        fi
+    done
 }
 
 command_build() {
@@ -197,12 +204,9 @@ command_up() {
     if [[ -z "${project_root}" ]]; then
         project_root="$(git rev-parse --show-toplevel 2> /dev/null || echo "$PWD")"
     fi
-    declare -r project_slug="$(basename "${project_root}")"
-    declare -r project_hash="$(echo -n "${project_root}" | md5sum | cut -d' ' -f1)"
-    declare project_name="${project_root##/}"
-    declare -r project_name="${project_name//\//-}"
+    declare -r project_name="$(basename "${project_root}")"
     #declare -r workdir="/home/user/project/$(realpath --relative-to="${project_root}" "$PWD")"
-    declare -gr run_dir="$ARCHBOX_RUN_DIR/${project_hash}"
+    declare -r run_dir="$ARCHBOX_RUN_DIR/${project_name}"
     declare -r state_dir="$ARCHBOX_STATE_DIR/${project_name}"
 
     mkdir -p "${run_dir}" "${state_dir}"
@@ -219,10 +223,10 @@ command_up() {
     else
         declare -r project_id="$(openssl rand -hex 3 | tee "${state_dir}/id.txt")"
     fi
-    declare -r hostname="archbox-${project_slug}"
+    declare -r hostname="archbox-${project_name}"
     declare -r mac_address="52:54:00$(echo -n "${project_id}" | sed -E 's|(..)|:\1|g')"
     declare -r vm_interface="tap-${project_id}"
-    declare -r vsock_cid="$(printf '%d\n' "0x${project_id}")"
+    declare -r vsock_cid="$(printf '%d' "0x${project_id}")"
 
     if [[ "${network}" == nat ]]; then
         declare -r bridge_interface="$ARCHBOX_NAT_BRIDGE"
@@ -368,10 +372,9 @@ command_down() {
         echo bad args >&2
         return 1
     fi
-    declare project_name="${project_root##/}"
-    declare -r project_name="${project_name//\//-}"
+    declare -r project_name="$(basename "${project_root}")"
     declare -r project_id="$(< "$ARCHBOX_STATE_DIR/${project_name}/id.txt")"
-    declare -r vsock_cid="$(printf '%d\n' "0x${project_id}")"
+    declare -r vsock_cid="$(printf '%d' "0x${project_id}")"
 
     timeout 15 ssh -i ~/.ssh/archbox "root@vsock/${vsock_cid}" systemctl poweroff ||:
     systemctl --user stop "archbox-${project_name}-*.service"
