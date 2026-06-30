@@ -382,7 +382,7 @@ command_down() {
 }
 
 command_destroy() {
-    command_list | fzf --multi | xargs -r -- rm -rf --
+    command_list | fzf --multi | awk '{print $1}' | tee /dev/stderr | xargs -r -I'{}' -- rm -rf "$ARCHBOX_STATE_DIR/{}"
 }
 
 command_logs() {
